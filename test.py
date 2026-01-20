@@ -96,14 +96,14 @@ if __name__ == "__main__":
     # ------------------- 加载配置和数据 -------------------
     printwrite(log_file, "Loading configs and dataset...")
 
-    val_path = configs.val_path
+    test_path = configs.test_path
     scale = configs.scale
     
     stats_file = os.path.join(exp_dir, f"stats_{name}.npy")
     stats = np.load(stats_file, allow_pickle=True).item()
 
     dataset_eval = FixedWindTerrainDataset(
-        val_path, configs.geo_path, train=False,
+        test_path, configs.geo_path, train=False,
         scale=scale, stats=stats
     )
     dl_eval = DataLoader(dataset_eval, batch_size=configs.batch_size_test,
@@ -140,5 +140,6 @@ if __name__ == "__main__":
     printwrite(log_file, f"Pred shape: {pred_shape}, True shape: {true_shape}")
 
     print(f"Done! Test MAE={mae:.6f}, results saved to {results_dir}/y_pred.npy and y_true.npy")
+
 
 
