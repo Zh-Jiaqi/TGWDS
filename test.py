@@ -58,12 +58,10 @@ def evaluate_mae(net, dataloader, device, stats, save_prefix="results"):
             total_time += t
             count_time += 1
 
-            # ----------- 反归一化 -----------
             # pred/true: (B,2,H,W)，mean/std: (2,)
             pred_denorm = pred.cpu().numpy() * wind_std[None, :, None, None] + wind_mean[None, :, None, None]
             true_denorm = hr.cpu().numpy()   * wind_std[None, :, None, None] + wind_mean[None, :, None, None]
 
-            # 计算 MAE (基于反归一化后的风速值)
             mae = np.mean(np.abs(pred_denorm - true_denorm))
             mae_sum += mae
             n += 1
@@ -93,7 +91,7 @@ if __name__ == "__main__":
     log_file = os.path.join(exp_dir, "log_test.txt")
     device = configs.device
 
-    # ------------------- 加载配置和数据 -------------------
+
     printwrite(log_file, "Loading configs and dataset...")
 
     test_path = configs.test_path
@@ -109,25 +107,21 @@ if __name__ == "__main__":
     dl_eval = DataLoader(dataset_eval, batch_size=configs.batch_size_test,
                          shuffle=False, drop_last=False)
 
-    # ------------------- 加载模型 -------------------
     chk_path = os.path.join(exp_dir, f"{name}_best.chk")
     printwrite(log_file, f"Loading checkpoint: {chk_path}")
     net = load_model(configs, chk_path, device)
     
-    dummy_lr = torch.randn(1, 2, 16, 16).to(device)     # LR 风速
-    dummy_gl = torch.randn(1, 1, 16, 16).to(device)    # DEM 低层特征
-    dummy_gh = torch.randn(1, 1, 64, 64).to(device)    # DEM 高频特征
+    dummy_lr = torch.randn(1, 2, 16, 16).to(device) 
+    dummy_gl = torch.randn(1, 1, 16, 16).to(device)
+    dummy_gh = torch.randn(1, 1, 64, 64).to(device)   
 
     flops, params = profile(net, inputs=(dummy_lr, dummy_gl, dummy_gh))
     flops, params = clever_format([flops, params], "%.3f")
 
-    print("================================================")
     print("Model Complexity Summary:")
     print(f"Params: {params}")
     print(f"FLOPs : {flops}")
-    print("================================================")
 
-    # ------------------- 推理 & 评估 -------------------
     results_dir = os.path.join(exp_dir, "results")
     os.makedirs(results_dir, exist_ok=True)
 
@@ -140,6 +134,7 @@ if __name__ == "__main__":
     printwrite(log_file, f"Pred shape: {pred_shape}, True shape: {true_shape}")
 
     print(f"Done! Test MAE={mae:.6f}, results saved to {results_dir}/y_pred.npy and y_true.npy")
+
 
 
 
