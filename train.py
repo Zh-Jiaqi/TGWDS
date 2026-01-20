@@ -5,7 +5,7 @@ import pickle
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torch.cuda.amp import GradScaler
 
 from config import configs
@@ -13,6 +13,7 @@ from utils.log import printwrite
 from data.datasets import FixedWindTerrainDataset
 from models.WSR_model import WindSR_Terrain
 from pytorch_wavelets import DWTForward
+
 
 
 
@@ -286,20 +287,19 @@ if __name__ == '__main__':
     stats_file = os.path.join(exp_dir, f"stats_{name}.npy")
 
     # 数据
-    train_path = configs.train_path
-    val_path = configs.val_path
+    train_val_path = configs.train_val_path
     scale = configs.scale
 
-    printwrite(log_file, 'processing training set')
-    dataset_train = FixedWindTerrainDataset(train_path, configs.geo_path, train=True,
+    printwrite(log_file, 'processing train_val set')
+    dataset_train = FixedWindTerrainDataset(train_val_path, configs.geo_path, train=True,
                                            scale=scale, save_stats_path=stats_file)
-    print(dataset_train.GetDataShape())
 
-    printwrite(log_file, 'processing eval set')
-    stats = np.load(stats_file, allow_pickle=True).item()
-    dataset_eval = FixedWindTerrainDataset(val_path, configs.geo_path, train=False,
-                                          scale=scale, stats=stats)
-    print(dataset_eval.GetDataShape())
+    val_percent = 0.1
+    n_val = int(len(full_dataset) * val_percent)
+    n_train = len(full_dataset) - n_val
+    printwrite(log_file, f'Splitting dataset: Total={len(full_dataset)}, Train={n_train}, Val={n_val}')
+
+    dataset_train, dataset_eval = random_split(full_dataset, [n_train, n_val], generator=torch.Generator().manual_seed(42))
 
     printwrite(log_file, 'Dataset_train Shape:\n' + str(dataset_train.GetDataShape()))
     printwrite(log_file, 'Dataset_test Shape:\n' + str(dataset_eval.GetDataShape()))
