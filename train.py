@@ -15,9 +15,6 @@ from models.WSR_model import WindSR_Terrain
 from pytorch_wavelets import DWTForward
 
 
-
-
-
 class WarmupCosine:
     def __init__(self, optimizer, warmup_steps, total_steps, base_lr, min_lr=1e-6):
         self.opt = optimizer
@@ -38,14 +35,11 @@ class WarmupCosine:
             g['lr'] = lr
         return lr
 
-
-# ============================= Trainer =============================
 class Trainer:
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = cfg.device
 
-        # 模型
         self.network = WindSR_Terrain(
             upscale=cfg.scale, dim=64,
             group_depth=6, dem_every=2, sample_ids=(1, 3, 5),
@@ -71,7 +65,7 @@ class Trainer:
         
 
         k1d = torch.tensor([1, 4, 6, 4, 1], dtype=torch.float32)
-        k2d = (k1d[:, None] @ k1d[None, :]) / 256.0  # 归一化
+        k2d = (k1d[:, None] @ k1d[None, :]) / 256.0
         self.blur5 = k2d.view(1, 1, 5, 5).to(self.device)  # (1,1,5,5)
 
 
@@ -89,9 +83,9 @@ class Trainer:
         # dem: (B,1,H,W)
         dx = self.gradient_x(dem)
         dy = self.gradient_y(dem)
-        grad = torch.sqrt(dx**2 + dy**2)  # 坡度大小
+        grad = torch.sqrt(dx**2 + dy**2) 
         grad_norm = grad / (grad.max() + eps)
-        mask = 1.0 - grad_norm  # 平坦区=1，陡峭区=0
+        mask = 1.0 - grad_norm 
         return mask
     
     def gradient_x(self, f):
@@ -108,7 +102,7 @@ class Trainer:
     def vorticity(self, u, v):
         return self.gradient_x(v) - self.gradient_y(u)
 
-    # -------------------------------------------
+
     def combine_loss(self, y_pred, y_true, gh, epoch: int,
                  ramp_T: int = 20,
                  phys_start: int = 10, phys_ramp: int = 10,
@@ -117,10 +111,8 @@ class Trainer:
                  ema_m: float = 0.9, gamma: float = 1.0,
                  w_high_min: float = 0.3, w_high_max: float = 1.2):
 
-        # 1) L1
         L1_full = F.l1_loss(y_pred, y_true)
 
-        # 2) 频率分解
         pred_low, pred_high = self.split_low_high(y_pred)
         true_low, true_high = self.split_low_high(y_true)
         Llow  = F.l1_loss(pred_low, true_low)
@@ -128,7 +120,6 @@ class Trainer:
         scale = true_high.abs().mean(dim=(1,2,3), keepdim=True).clamp_min(1e-3)
         Lhigh = F.l1_loss(pred_high/scale, true_high/scale)
 
-        # 3) ramp（主 loss 调度）
         t   = min(1.0, float(epoch) / max(1, ramp_T))
         lam = min(0.5, 0.5 * t)
         w_low_sched  = 1.0
@@ -136,8 +127,6 @@ class Trainer:
         
         loss_hf = w_low_sched * Llow + w_high_sched * Lhigh
         
-
-        # 5) 物理项（散度 + 涡度，带地形权重 mask）
         u_pred, v_pred = y_pred[:,0:1], y_pred[:,1:2]
         u_true, v_true = y_true[:,0:1], y_true[:,1:2]
 
@@ -146,12 +135,11 @@ class Trainer:
         vor_pred = self.vorticity(u_pred, v_pred)
         vor_true = self.vorticity(u_true, v_true)
 
-        mask = self.terrain_mask_inverse(gh)  # 平坦区=1，陡峭区=0
+        mask = self.terrain_mask_inverse(gh) 
         Ldiv = ((div_pred - div_true).abs() * mask).mean()
         Lvor = ((vor_pred - vor_true).abs() * mask).mean()
         Phys = Ldiv + Lvor
 
-        # 物理权重随 epoch 调整
         if epoch < phys_start:
             w_phys = 0.0
         elif epoch < phys_start + phys_ramp:
@@ -159,7 +147,6 @@ class Trainer:
         else:
             w_phys = w_phys_max
 
-        # 6) 总损失
         loss = lam * L1_full + (1 - lam) * (loss_hf + w_phys * Phys)
 
         info = {
@@ -171,12 +158,12 @@ class Trainer:
         }
         return loss, info
     
-    # -------------------- 验证损失 L1 --------------------
+
     @staticmethod
     def test_loss(y_pred, y_true):
         return F.l1_loss(y_pred, y_true)
 
-    # -------------------- 单步训练 --------------------
+
     def train_once(self, lr, hr, gl, gh, epoch):
         lr = lr.float().to(self.device)  # (B,2,H/scale,W/scale)
         hr = hr.float().to(self.device)  # (B,2,H,W)
@@ -188,7 +175,6 @@ class Trainer:
         loss, info = self.combine_loss(pred, hr, gh, epoch=epoch, ramp_T=10)
         return loss, info
 
-    # -------------------- 验证 --------------------
     def test(self, dataset_eval, dataloader_eval):
         self.network.eval()
         total_loss, n = 0.0, 0
@@ -205,7 +191,6 @@ class Trainer:
                 n += 1
         return total_loss / max(1, n)
 
-    # -------------------- 训练主循环 --------------------
     def train(self, dataset_train, dataset_eval, chk_dir):
 
         log_file = os.path.join(chk_dir, "log.txt")
@@ -242,7 +227,6 @@ class Trainer:
                                    info["lam"], info["w_low"], info["w_high"], info["Phys"], info["w_phys"], lr_now
                                ))
 
-            # epoch 末评估
             val = self.test(dataset_eval, dl_eval)
             printwrite(log_file, f'epoch eval loss: {val:.4f}')
             if val < best:
@@ -255,7 +239,6 @@ class Trainer:
                 printwrite(log_file, f'eval loss is not reduced for {count} epoch')
                 printwrite(log_file, f'best is {best} until now')
 
-            # 保存最近一次
             self.save_model(os.path.join(chk_dir, f'{name}_last.chk'))
             
             if count >= self.early_stop:
@@ -271,40 +254,45 @@ class Trainer:
     def save_model(self, path):
         torch.save({'net': self.network.state_dict()}, path)
 
-
-# ============================= main =============================
 if __name__ == '__main__':
     name = getattr(configs, "name", "WSR")
-    
-
     exp_dir = f"exp/{name}"
     os.makedirs(exp_dir, exist_ok=True)
-
     log_file = os.path.join(exp_dir, "log.txt")
     printwrite(log_file, 'Configs:\n' + str(configs.__dict__))
     
-
     stats_file = os.path.join(exp_dir, f"stats_{name}.npy")
-
-    # 数据
     train_val_path = configs.train_val_path
     scale = configs.scale
-
+    
     printwrite(log_file, 'processing train_val set')
     dataset_train_val = FixedWindTerrainDataset(train_val_path, configs.geo_path, train=True,
                                            scale=scale, save_stats_path=stats_file)
-
     val_percent = 0.1
     n_val = int(len(dataset_train_val) * val_percent)
     n_train = len(dataset_train_val) - n_val
     printwrite(log_file, f'Splitting dataset: Total={len(dataset_train_val)}, Train={n_train}, Val={n_val}')
 
-    dataset_train, dataset_eval = random_split(full_dataset, [n_train, n_val], generator=torch.Generator().manual_seed(42))
+    dataset_train, dataset_eval = random_split(dataset_train_val, [n_train, n_val], generator=torch.Generator().manual_seed(42))
 
-    printwrite(log_file, 'Dataset_train Shape:\n' + str(dataset_train.GetDataShape()))
-    printwrite(log_file, 'Dataset_test Shape:\n' + str(dataset_eval.GetDataShape()))
+    def get_subset_shape_dict(subset, parent_dataset):
+        full_shapes_dict = parent_dataset.GetDataShape()
+        current_len = len(subset)
+        new_shapes_dict = {}
+        if isinstance(full_shapes_dict, dict):
+            for key, shape in full_shapes_dict.items():
+                new_shape = (current_len,) + shape[1:]
+                new_shapes_dict[key] = new_shape
+        else:
+            return f"Length: {current_len} (Shape format unknown)"
+        return new_shapes_dict
 
-    # 训练
+    train_shapes = get_subset_shape_dict(dataset_train, dataset_train_val)
+    eval_shapes = get_subset_shape_dict(dataset_eval, dataset_train_val)
+    
+    printwrite(log_file, 'Dataset_train Shape:\n' + str(train_shapes))
+    printwrite(log_file, 'Dataset_test Shape:\n'  + str(eval_shapes))
+
     trainer = Trainer(configs)
     trainer.save_configs(os.path.join(exp_dir, "configs.pkl"))
     trainer.train(dataset_train, dataset_eval, chk_dir=exp_dir)
