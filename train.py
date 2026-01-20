@@ -257,11 +257,10 @@ class Trainer:
             # 保存最近一次
             self.save_model(os.path.join(chk_dir, f'{name}_last.chk'))
             
-             #----------- Early Stopping 判断 -----------
             if count >= self.early_stop:
                 printwrite(log_file, f'\nEarly stopping triggered after {count} epochs without improvement.')
                 printwrite(log_file, f'Best validation loss: {best:.5f}')
-                break  # 结束训练主循环
+                break
                 
 
     def save_configs(self, path):
