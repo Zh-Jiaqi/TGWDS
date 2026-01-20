@@ -15,7 +15,7 @@ configs.device = torch.device('cuda:0')
 configs.batch_size = 32   #8#4倍4； 8倍32； #16
 configs.batch_size_test = 1
 
-configs.epochs = 50
+configs.epochs = 100
 configs.lr = 0.001 #原 0.001； swin 0.0002
 configs.opt_size = 128
 
@@ -27,9 +27,9 @@ configs.num_layers = 6
 configs.num_heads = 6
 configs.display_interval = 30  # 75 #4倍200， 8倍80
 configs.warm_up = 1000
-configs.patience = 20
+configs.patience = 100
 
 
 configs.train_path = r"/root/autodl-tmp/Data/Northeast/High_Res_train.npy"
 configs.val_path = r"/root/autodl-tmp/Data/Northeast/High_Res_test.npy"
-configs.geo_path = r"/root/autodl-tmp/Data/Northeast/DEM_0.25deg_NortheastChina_norm.npy"
+configs.geo_path = r"/root/autodl-tmp/Data/Northeast/DEM_NortheastChina.npy"
