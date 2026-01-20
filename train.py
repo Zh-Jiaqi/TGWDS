@@ -291,13 +291,13 @@ if __name__ == '__main__':
     scale = configs.scale
 
     printwrite(log_file, 'processing train_val set')
-    dataset_train = FixedWindTerrainDataset(train_val_path, configs.geo_path, train=True,
+    dataset_train_val = FixedWindTerrainDataset(train_val_path, configs.geo_path, train=True,
                                            scale=scale, save_stats_path=stats_file)
 
     val_percent = 0.1
-    n_val = int(len(full_dataset) * val_percent)
-    n_train = len(full_dataset) - n_val
-    printwrite(log_file, f'Splitting dataset: Total={len(full_dataset)}, Train={n_train}, Val={n_val}')
+    n_val = int(len(dataset_train_val) * val_percent)
+    n_train = len(dataset_train_val) - n_val
+    printwrite(log_file, f'Splitting dataset: Total={len(dataset_train_val)}, Train={n_train}, Val={n_val}')
 
     dataset_train, dataset_eval = random_split(full_dataset, [n_train, n_val], generator=torch.Generator().manual_seed(42))
 
