@@ -9,7 +9,7 @@ TGWDS, a Terrain-Guided deep neural network for hub-height Wind field DownScalin
 ```
 conda create -n wpn python=3.8
 conda activate tgwds
-git clone https://github.com/Zhang-zongwei/TGWDS.git
+git clone https://github.com/Zh-Jiaqi/TGWDS.git
 cd TGWDS
 pip install -r requirements.txt
 ```
