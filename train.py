@@ -256,28 +256,56 @@ class Trainer:
 
 if __name__ == '__main__':
     name = getattr(configs, "name", "WSR")
+    
+
     exp_dir = f"exp/{name}"
     os.makedirs(exp_dir, exist_ok=True)
+
     log_file = os.path.join(exp_dir, "log.txt")
     printwrite(log_file, 'Configs:\n' + str(configs.__dict__))
     
+
     stats_file = os.path.join(exp_dir, f"stats_{name}.npy")
-    train_val_path = configs.train_val_path
+
+    train_path = configs.train_path    
+    val_path = configs.val_path          
     scale = configs.scale
+
+    printwrite(log_file, 'processing train set')
+    dataset_train = FixedWindTerrainDataset(
+        train_path,
+        configs.geo_path,
+        train=True,
+        scale=scale,
+        save_stats_path=stats_file
+    )
+
+    printwrite(log_file, 'processing val set')
+    dataset_eval = FixedWindTerrainDataset(
+        val_path,
+        configs.geo_path,
+        train=False,
+        scale=scale,
+        save_stats_path=stats_file 
+    )
+
+    printwrite(log_file, 'processing test set')
+    dataset_test = FixedWindTerrainDataset(
+        configs.test_path,
+        configs.geo_path,
+        train=False,
+        scale=scale,
+        save_stats_path=stats_file
+    )
     
-    printwrite(log_file, 'processing train_val set')
-    dataset_train_val = FixedWindTerrainDataset(train_val_path, configs.geo_path, train=True,
-                                           scale=scale, save_stats_path=stats_file)
-    val_percent = 0.1
-    n_val = int(len(dataset_train_val) * val_percent)
-    n_train = len(dataset_train_val) - n_val
-    printwrite(log_file, f'Splitting dataset: Total={len(dataset_train_val)}, Train={n_train}, Val={n_val}')
+    printwrite(
+        log_file,
+        f'Dataset loaded: Train={len(dataset_train)}, Val={len(dataset_eval)}, Test={len(dataset_test)}'
+    )
 
-    dataset_train, dataset_eval = random_split(dataset_train_val, [n_train, n_val], generator=torch.Generator().manual_seed(42))
-
-    def get_subset_shape_dict(subset, parent_dataset):
-        full_shapes_dict = parent_dataset.GetDataShape()
-        current_len = len(subset)
+    def get_dataset_shape_dict(dataset):
+        full_shapes_dict = dataset.GetDataShape()
+        current_len = len(dataset)
         new_shapes_dict = {}
         if isinstance(full_shapes_dict, dict):
             for key, shape in full_shapes_dict.items():
@@ -287,12 +315,32 @@ if __name__ == '__main__':
             return f"Length: {current_len} (Shape format unknown)"
         return new_shapes_dict
 
-    train_shapes = get_subset_shape_dict(dataset_train, dataset_train_val)
-    eval_shapes = get_subset_shape_dict(dataset_eval, dataset_train_val)
-    
-    printwrite(log_file, 'Dataset_train Shape:\n' + str(train_shapes))
-    printwrite(log_file, 'Dataset_test Shape:\n'  + str(eval_shapes))
+    train_shapes = get_dataset_shape_dict(dataset_train)
+    eval_shapes = get_dataset_shape_dict(dataset_eval)
+    test_shapes = get_dataset_shape_dict(dataset_test)
+
+    printwrite(log_file, f"Train shapes: {train_shapes}")
+    printwrite(log_file, f"Val shapes: {eval_shapes}")
+    printwrite(log_file, f"Test shapes: {test_shapes}")
 
     trainer = Trainer(configs)
     trainer.save_configs(os.path.join(exp_dir, "configs.pkl"))
     trainer.train(dataset_train, dataset_eval, chk_dir=exp_dir)
+
+    # ==================== 训练结束后自动测试 ====================
+    best_ckpt = os.path.join(exp_dir, f"{configs.name}_best.chk")
+    results_dir = os.path.join(exp_dir, "results")
+
+    printwrite(log_file, 'loading best checkpoint for test')
+    trainer.load_model(best_ckpt)
+
+    dl_test = DataLoader(
+        dataset_test,
+        batch_size=16,
+        shuffle=False,
+        drop_last=False
+    )
+
+    test_loss = trainer.test_and_save(dataset_test, dl_test, results_dir)
+    printwrite(log_file, f"test MAE: {test_loss:.6f}")
+    printwrite(log_file, f"saved predictions to: {results_dir}")
