@@ -30,10 +30,6 @@ def standardize(arr, train=True, mean=None, std=None, eps=1e-6):
         return (arr - mean.reshape(1, -1, 1, 1)) / s.reshape(1, -1, 1, 1)
 
 class FixedWindTerrainDataset(Dataset):
-    """
-    wind_path: .npy，内部是 dict，包含键 'u100','v100'，每个形状 (N,H,W)
-    ele_path : .npy，普通数组，形状 (N,1,H,W) / (1,H,W) / (H,W)
-    """
 
     def __init__(self, wind_path, ele_path,
                  train=True, scale=2, save_stats_path=None):
