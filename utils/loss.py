@@ -12,7 +12,7 @@ class WindLoss(nn.Module):
         k2d = (k1d[:, None] @ k1d[None, :]) / 256.0
         self.register_buffer("blur5", k2d.view(1, 1, 5, 5))
 
-    # -------------------- 频域拆分（低频=模糊，高频=原图-低频） --------------------
+
     def _lp_smooth(self, x: torch.Tensor) -> torch.Tensor:
         w = self.blur5.repeat(x.size(1), 1, 1, 1)
         return F.conv2d(x, w, padding=2, groups=x.size(1))
@@ -22,7 +22,7 @@ class WindLoss(nn.Module):
         high = x - low
         return low, high
 
-    # -------------------- 地形与物理约束 --------------------
+
     def gradient_x(self, f):
         kernel = torch.tensor([[-0.5, 0, 0.5]], dtype=f.dtype, device=f.device).view(1, 1, 1, 3)
         return F.conv2d(f, kernel, padding=(0, 1))
@@ -45,7 +45,7 @@ class WindLoss(nn.Module):
         mask = 1.0 - grad_norm
         return mask
 
-    # -------------------- 训练损失 --------------------
+
     def forward(
         self,
         y_pred,
@@ -56,10 +56,10 @@ class WindLoss(nn.Module):
         phys_start: int = 10,
         phys_ramp: int = 10,
     ):
-        # 1) 整图 L1
+        # L1
         L1_full = F.l1_loss(y_pred, y_true)
 
-        # 2) 频率分解
+
         pred_low, pred_high = self.split_low_high(y_pred)
         true_low, true_high = self.split_low_high(y_true)
 
@@ -72,7 +72,6 @@ class WindLoss(nn.Module):
         w_high = 0.05 + 0.15 * t
    
 
-        # 4) 物理项
         u_pred, v_pred = y_pred[:, 0:1], y_pred[:, 1:2]
         u_true, v_true = y_true[:, 0:1], y_true[:, 1:2]
 
@@ -93,7 +92,7 @@ class WindLoss(nn.Module):
         else:
             w_phys = 1
 
-        # 5) 总损失
+
         loss = L1_full + w_high * Lhigh + w_phys * Phys
 
         info = {
@@ -105,7 +104,7 @@ class WindLoss(nn.Module):
         }
         return loss, info
 
-    # -------------------- 验证损失 --------------------
+    # -------------------- val --------------------
     @staticmethod
     def val_loss(y_pred, y_true):
         return F.l1_loss(y_pred, y_true)
