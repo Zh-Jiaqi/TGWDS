@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.functional import dropout
-from utils.utils import TransformerBlock, DetailFeatureExtraction
-from utils.PSA import PSAModule
+
+from .modules import TransformerBlock, DetailFeatureExtraction
+from .PSA import PSAModule
 
 
 class WindSR_Terrain(nn.Module):
@@ -54,11 +55,11 @@ class EncoderTF(nn.Module):
     def __init__(
         self,
         dim: int = 64,
-        depth: int = 6,
-        res_scale: float = 0.1,
-        dem_ch: int = 16,
-        dem_every: int = 2,
-        sample_blocks: tuple = (1, 3, 5),
+        depth: int = 6,                 
+        res_scale: float = 0.1,         
+        dem_ch: int = 16,               
+        dem_every: int = 2,             
+        sample_blocks: tuple = (1, 3, 5),  
         psa_kernels=(1, 3, 5),
         psa_groups=(1, 1, 1),
         dropout_max: float = 0.2
@@ -66,6 +67,7 @@ class EncoderTF(nn.Module):
         super().__init__()
         self.dim = dim
         self.depth = depth
+        assert dem_every >= 1, "dem_every 必须是正整数（1 表示每个块都施放 FiLM）"
         self.dem_every = dem_every
         self.sample_blocks = tuple(sample_blocks)
         # Stem
@@ -74,32 +76,34 @@ class EncoderTF(nn.Module):
             nn.SiLU(inplace=True),
             nn.Conv2d(dim, dim, 3, padding=1),
         )
+        
         self.blocks = nn.ModuleList([
             ResidualCrossFusionBlock(dim=dim, dropout_max=dropout_max, res_scale=res_scale)
             for _ in range(depth)
         ])
-
+        
         self.dem_enc = DemEncoderLR(cond_ch=dem_ch)
         self.film    = SpatialFiLM(cond_ch=dem_ch, dim=dim)
-
+        
         inplans_psa = max(1, len(self.sample_blocks)) * dim
         self.psa = PSAModule(inplans=inplans_psa, out_planes=dim,
                              conv_kernels=list(psa_kernels), conv_groups=list(psa_groups))
 
-
+        
         self.fuse_gate = nn.Sequential(nn.Conv2d(dim * 2, dim, 1), nn.Sigmoid())
 
     def forward(self, x_lr: torch.Tensor, ele_lr: torch.Tensor):
+        assert ele_lr is not None, "本编码器要求必须提供 ele_lr（DEM）"
         h = self.stem(x_lr)
-
+        
         cond = self.dem_enc(ele_lr)
         sampled = []
         for i, blk in enumerate(self.blocks):
-
+            
             if i % self.dem_every == 0:
                 h = self.film(h, cond)
-            h = blk(h, ele_lr)
-
+            h = blk(h, ele_lr)  
+            
             if i in self.sample_blocks:
                 sampled.append(h)
 
@@ -112,7 +116,6 @@ class EncoderTF(nn.Module):
 
 
 class ResidualCrossFusionBlock(nn.Module):
-
     def __init__(self, dim, res_scale=0.1, dropout_max=0.1, **kw):
         super().__init__()
         self.block = CrossFusionBlock(dim=dim, dropout_max=0.1, **kw)
@@ -130,13 +133,13 @@ class CrossFusionBlock(nn.Module):
 
         heads = num_heads if num_heads is not None else (4 if dim >= 32 else 2)
 
-        dp_max = dropout_max
+        dp_max = dropout_max  
         dp_list = torch.linspace(0, dp_max, steps=trans_layers).tolist()
 
         self.trans_branch = nn.ModuleList([
             TransformerBlock(dim, num_heads=heads, ffn_expansion_factor=ffn_expansion_factor,
                              bias=False, LayerNorm_type=LayerNorm_type,
-                             drop_path=dp_list[i])
+                             drop_path=dp_list[i])  
             for i in range(trans_layers)
         ])
 
@@ -191,7 +194,6 @@ class DemEncoderLR(nn.Module):
         return self.stem(feat)
 
 class SpatialFiLM(nn.Module):
-
     def __init__(self, cond_ch: int = 16, dim: int = 64):
         super().__init__()
         self.gen = nn.Sequential(
@@ -207,7 +209,6 @@ class SpatialFiLM(nn.Module):
         return (1.0 + g) * x + b
 
 class SFTModulator(nn.Module):
-
     def __init__(self, cond_in: int = 1, feat_dim: int = 16, hidden: int = 32):
         super().__init__()
         self.fea = nn.Sequential(
@@ -237,6 +238,7 @@ class DecoderTF(nn.Module):
         self.upscale = upscale
         self.stages  = int(math.log2(upscale))
 
+        
         if decoder_feats is None:
             if   self.stages == 1:
                 decoder_feats = [max(8, in_ch // 4)]
@@ -256,6 +258,7 @@ class DecoderTF(nn.Module):
         assert len(decoder_feats) == self.stages
         self.decoder_feats = decoder_feats
 
+        
         mods = []
         feat_in = in_ch
         for fo in decoder_feats:
@@ -263,20 +266,20 @@ class DecoderTF(nn.Module):
                 feat_in=feat_in, feat_out=fo, sft_hidden=sft_hidden,
                 cross_blocks=cross_blocks_per_stage, res_scale=stage_res_scale, dropout_max = dropout_max
             ))
-            feat_in = fo * 2
+            feat_in = fo * 2  
         self.stages_mod = nn.ModuleList(mods)
 
-
+        
         self.tail = nn.Conv2d(feat_in, 2, 1)
 
     def forward(self, x_lr, bridge, ele_hr):
         x_lr_ini = x_lr.clone()
         B, _, H, W = x_lr.shape
-
+        
         out = bridge
         for si, stage in enumerate(self.stages_mod):
-
-
+            
+            
             scale_down = self.upscale // (2 ** (si + 1))
             if scale_down == 1:
                 dem_s = ele_hr
@@ -285,7 +288,7 @@ class DecoderTF(nn.Module):
                                       mode='bilinear', align_corners=False)
             x_lr, out = stage(x_lr, out, dem_s)
 
-
+        
         base = F.interpolate(x_lr_ini, scale_factor=self.upscale, mode='bilinear', align_corners=False)
         return self.tail(out) + base
 
@@ -310,7 +313,7 @@ class ReconstructionStage(nn.Module):
         self.res_scale = nn.Parameter(torch.tensor(res_scale), requires_grad=True)
 
     def forward(self, x_lr, feat_in, dem_s):
-
+        
         feat_up  = self.up_feat(feat_in)         # (B,feat_out,·,·)
         img_up   = self.up_img(x_lr)             # (B,2,·,·)
         feat_mod = self.sft(feat_up, dem_s)
@@ -324,8 +327,10 @@ class ReconstructionStage(nn.Module):
         out = x_cat
         for blk in self.cross_branch:
             out = blk(out, dem_s)
-        out = out + self.res_scale * x_cat
+        out = out + self.res_scale * x_cat                      
         return img_up, out
+
+
 
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
