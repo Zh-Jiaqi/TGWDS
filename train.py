@@ -14,8 +14,7 @@ from utils.datasets import FixedWindTerrainDataset
 from utils.loss import WindLoss
 import time
 
-#from models.WSR_model import WindSR_Terrain
-from models.model_wo_Dem import WindSR_Terrain
+from models.WSR_model import WindSR_Terrain
 
 
 class WarmupCosine:
