@@ -7,7 +7,7 @@ from torch.nn.functional import dropout
 from utils.utils import TransformerBlock, DetailFeatureExtraction
 from utils.PSA import PSAModule
 
-# ========== 顶层网络 ==========
+
 class WindSR_Terrain(nn.Module):
     def __init__(self,
                  upscale: int = 8,
@@ -49,16 +49,16 @@ class WindSR_Terrain(nn.Module):
         y = self.decoder(x_lr, bridge, ele_hr)
         return y
 
-# ========== 编码器 ==========
+
 class EncoderTF(nn.Module):
     def __init__(
         self,
         dim: int = 64,
-        depth: int = 6,                 # 总块数 N
-        res_scale: float = 0.1,         # 每块残差缩放
-        dem_ch: int = 16,               # DEM 编码通道
-        dem_every: int = 2,             # FiLM 施放间隔；1=每块；2=每两块...
-        sample_blocks: tuple = (1, 3, 5),  # 抽样到 PSA 的块索引（0-based）
+        depth: int = 6,
+        res_scale: float = 0.1,
+        dem_ch: int = 16,
+        dem_every: int = 2,
+        sample_blocks: tuple = (1, 3, 5),
         psa_kernels=(1, 3, 5),
         psa_groups=(1, 1, 1),
         dropout_max: float = 0.2
@@ -78,28 +78,28 @@ class EncoderTF(nn.Module):
             ResidualCrossFusionBlock(dim=dim, dropout_max=dropout_max, res_scale=res_scale)
             for _ in range(depth)
         ])
-        # 始终使用 DEM 条件模块
+
         self.dem_enc = DemEncoderLR(cond_ch=dem_ch)
         self.film    = SpatialFiLM(cond_ch=dem_ch, dim=dim)
-        # PSA：把多个抽样特征 cat 后投影回 dim
+
         inplans_psa = max(1, len(self.sample_blocks)) * dim
         self.psa = PSAModule(inplans=inplans_psa, out_planes=dim,
                              conv_kernels=list(psa_kernels), conv_groups=list(psa_groups))
 
-        # Gate 融合：把 f_last 与 f_psa 动态融合为 bridge
+
         self.fuse_gate = nn.Sequential(nn.Conv2d(dim * 2, dim, 1), nn.Sigmoid())
 
     def forward(self, x_lr: torch.Tensor, ele_lr: torch.Tensor):
         h = self.stem(x_lr)
-        # DEM 条件
+
         cond = self.dem_enc(ele_lr)
         sampled = []
         for i, blk in enumerate(self.blocks):
-            # 按间隔施放 FiLM（例如 dem_every=2 → i=0,2,4,...）
+
             if i % self.dem_every == 0:
                 h = self.film(h, cond)
-            h = blk(h, ele_lr)  # 每块自带残差
-            # 抽样点（块索引）
+            h = blk(h, ele_lr)
+
             if i in self.sample_blocks:
                 sampled.append(h)
 
@@ -110,9 +110,9 @@ class EncoderTF(nn.Module):
         bridge = gate * f_last + (1 - gate) * f_psa
         return bridge
 
-# ========== CrossFusion + 残差 ==========
+
 class ResidualCrossFusionBlock(nn.Module):
-    """对 CrossFusionBlock 加外层残差，深堆更稳"""
+
     def __init__(self, dim, res_scale=0.1, dropout_max=0.1, **kw):
         super().__init__()
         self.block = CrossFusionBlock(dim=dim, dropout_max=0.1, **kw)
@@ -130,13 +130,13 @@ class CrossFusionBlock(nn.Module):
 
         heads = num_heads if num_heads is not None else (4 if dim >= 32 else 2)
 
-        dp_max = dropout_max  # 例如编码器最大 0.1
+        dp_max = dropout_max
         dp_list = torch.linspace(0, dp_max, steps=trans_layers).tolist()
 
         self.trans_branch = nn.ModuleList([
             TransformerBlock(dim, num_heads=heads, ffn_expansion_factor=ffn_expansion_factor,
                              bias=False, LayerNorm_type=LayerNorm_type,
-                             drop_path=dp_list[i])  # 逐层分配
+                             drop_path=dp_list[i])
             for i in range(trans_layers)
         ])
 
@@ -161,7 +161,7 @@ def _pick_gn_groups(C: int) -> int:
             return g
     return 1
 
-# ========== 条件/调制模块 ==========
+
 class DemEncoderLR(nn.Module):
     def __init__(self, cond_ch: int = 16):
         super().__init__()
@@ -191,7 +191,7 @@ class DemEncoderLR(nn.Module):
         return self.stem(feat)
 
 class SpatialFiLM(nn.Module):
-    """空间自适应仿射：y = (1+γ)⊙x + β，条件来自 LR DEM 编码"""
+
     def __init__(self, cond_ch: int = 16, dim: int = 64):
         super().__init__()
         self.gen = nn.Sequential(
@@ -207,7 +207,7 @@ class SpatialFiLM(nn.Module):
         return (1.0 + g) * x + b
 
 class SFTModulator(nn.Module):
-    """解码阶段 SFT：对空间位置逐像素生成 (γ,β)"""
+
     def __init__(self, cond_in: int = 1, feat_dim: int = 16, hidden: int = 32):
         super().__init__()
         self.fea = nn.Sequential(
@@ -221,7 +221,7 @@ class SFTModulator(nn.Module):
         g, b = torch.chunk(gb, 2, dim=1)
         return (1.0 + g) * feat + b
 
-# ========== 解码器 ==========
+
 class UpsampleConvPixelShuffle(nn.Module):
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super().__init__()
@@ -266,17 +266,17 @@ class DecoderTF(nn.Module):
             feat_in = fo * 2
         self.stages_mod = nn.ModuleList(mods)
 
-        # 尾部映射到 2 通道 (u, v)
+
         self.tail = nn.Conv2d(feat_in, 2, 1)
 
     def forward(self, x_lr, bridge, ele_hr):
         x_lr_ini = x_lr.clone()
         B, _, H, W = x_lr.shape
-        # 逐 stage 需要的 DEM 尺度
+
         out = bridge
         for si, stage in enumerate(self.stages_mod):
-            # 当前 stage 目标空间尺度 = 2^(si+1) * (H, W)
-            # 已给的是 ele_hr(=2^S)，则 dem_s 缩放为 2^(si+1)
+
+
             scale_down = self.upscale // (2 ** (si + 1))
             if scale_down == 1:
                 dem_s = ele_hr
@@ -285,7 +285,7 @@ class DecoderTF(nn.Module):
                                       mode='bilinear', align_corners=False)
             x_lr, out = stage(x_lr, out, dem_s)
 
-        # 全局图像残差（常规 SR）
+
         base = F.interpolate(x_lr_ini, scale_factor=self.upscale, mode='bilinear', align_corners=False)
         return self.tail(out) + base
 
@@ -310,7 +310,7 @@ class ReconstructionStage(nn.Module):
         self.res_scale = nn.Parameter(torch.tensor(res_scale), requires_grad=True)
 
     def forward(self, x_lr, feat_in, dem_s):
-        # 高频/低频分支
+
         feat_up  = self.up_feat(feat_in)         # (B,feat_out,·,·)
         img_up   = self.up_img(x_lr)             # (B,2,·,·)
         feat_mod = self.sft(feat_up, dem_s)
@@ -324,7 +324,7 @@ class ReconstructionStage(nn.Module):
         out = x_cat
         for blk in self.cross_branch:
             out = blk(out, dem_s)
-        out = out + self.res_scale * x_cat                      # 单层 Stage 残差
+        out = out + self.res_scale * x_cat
         return img_up, out
 
 if __name__ == "__main__":
