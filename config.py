@@ -30,6 +30,7 @@ configs.warm_up = 1000
 configs.patience = 100
 
 
-configs.train_val_path = r"/root/autodl-tmp/Data/Northeast/High_Res_train_val.npy"
-configs.test_path = r"/root/autodl-tmp/Data/Northeast/High_Res_test.npy"
-configs.geo_path = r"/root/autodl-tmp/Data/Northeast/DEM_NortheastChina.npy"
+configs.train_path = r"Northeast/High_Res_train.npy"
+configs.val_path = r"Northeast/High_Res_val.npy"
+configs.test_path = r"Northeast/High_Res_test.npy"
+configs.geo_path = r"Northeast/DEM_0.25deg_NortheastChina_norm.npy"
