@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 - `data/:` contains a test set for the northeast region of the manuscript, which can be downloaded via the link .
 - `models:` contains the network architecture of this TGWDS.
-- `utils/:` contains data processing files and some layers module.
+- `utils/:` contains data processing files and loss module.
 - `exp/:` contains weights, predicted wind speed results and evaluation methods.
 - `config.py：`  training configs for the TGWDS.
 - `train.py:` Train the TGWDS.
