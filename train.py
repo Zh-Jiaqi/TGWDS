@@ -10,12 +10,17 @@ from torch.cuda.amp import GradScaler
 
 from config import configs
 from utils.log import printwrite
-from data.datasets import FixedWindTerrainDataset
-from models.WSR_model import WindSR_Terrain
-from pytorch_wavelets import DWTForward
+from utils.datasets import FixedWindTerrainDataset
+from utils.loss import WindLoss
+import time
+
+#from models.WSR_model import WindSR_Terrain
+from models.model_wo_Dem import WindSR_Terrain
 
 
+# ----------------------------- 简单 Warmup+Cosine -----------------------------
 class WarmupCosine:
+    """按 step 更新的 warmup+cosine 调度器（batch 级）"""
     def __init__(self, optimizer, warmup_steps, total_steps, base_lr, min_lr=1e-6):
         self.opt = optimizer
         self.warmup = max(1, warmup_steps)
@@ -35,6 +40,8 @@ class WarmupCosine:
             g['lr'] = lr
         return lr
 
+
+# ============================= Trainer =============================
 class Trainer:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -49,9 +56,11 @@ class Trainer:
             stage_res_scale=0.2, dropout_max=0.1
         ).to(self.device)
 
+
         self.opt = torch.optim.AdamW(self.network.parameters(),
                                      lr=cfg.lr, weight_decay=1e-4, betas=(0.9, 0.999))
         
+
         steps_per_epoch = getattr(cfg, "steps_per_epoch_est", 270)
         self.total_steps = cfg.epochs * steps_per_epoch
         self.sched = WarmupCosine(self.opt,
@@ -63,105 +72,21 @@ class Trainer:
 
         self.scaler = GradScaler()
         
+        self.loss_fn = WindLoss(self.device).to(self.device)
 
-        k1d = torch.tensor([1, 4, 6, 4, 1], dtype=torch.float32)
-        k2d = (k1d[:, None] @ k1d[None, :]) / 256.0
-        self.blur5 = k2d.view(1, 1, 5, 5).to(self.device)  # (1,1,5,5)
-
-
-    def _lp_smooth(self, x: torch.Tensor) -> torch.Tensor:
-        # depthwise conv
-        w = self.blur5.repeat(x.size(1), 1, 1, 1)
-        return F.conv2d(x, w, padding=2, groups=x.size(1))
-
-    def split_low_high(self, x: torch.Tensor):
-        low = self._lp_smooth(x)
-        high = x - low
-        return low, high
-
-    def terrain_mask_inverse(self, dem, eps=1e-3):
-        # dem: (B,1,H,W)
-        dx = self.gradient_x(dem)
-        dy = self.gradient_y(dem)
-        grad = torch.sqrt(dx**2 + dy**2) 
-        grad_norm = grad / (grad.max() + eps)
-        mask = 1.0 - grad_norm 
-        return mask
+    def _load_stats(self):
+        stats_file = os.path.join("exp", self.cfg.name, f"stats_{self.cfg.name}.npy")
+        if not os.path.exists(stats_file):
+            raise FileNotFoundError(f"Stats file not found: {stats_file}")
     
-    def gradient_x(self, f):
-        kernel = torch.tensor([[-0.5, 0, 0.5]], dtype=f.dtype, device=f.device).view(1,1,1,3)
-        return F.conv2d(f, kernel, padding=(0,1))
-
-    def gradient_y(self, f):
-        kernel = torch.tensor([[-0.5],[0],[0.5]], dtype=f.dtype, device=f.device).view(1,1,3,1)
-        return F.conv2d(f, kernel, padding=(1,0))
-
-    def divergence(self, u, v):
-        return self.gradient_x(u) + self.gradient_y(v)
-
-    def vorticity(self, u, v):
-        return self.gradient_x(v) - self.gradient_y(u)
-
-
-    def combine_loss(self, y_pred, y_true, gh, epoch: int,
-                 ramp_T: int = 20,
-                 phys_start: int = 10, phys_ramp: int = 10,
-                 w_phys_max: float = 0.1,
-                 base_w_low: float = 1.0, base_w_high: float = 1.0,
-                 ema_m: float = 0.9, gamma: float = 1.0,
-                 w_high_min: float = 0.3, w_high_max: float = 1.2):
-
-        L1_full = F.l1_loss(y_pred, y_true)
-
-        pred_low, pred_high = self.split_low_high(y_pred)
-        true_low, true_high = self.split_low_high(y_true)
-        Llow  = F.l1_loss(pred_low, true_low)
-
-        scale = true_high.abs().mean(dim=(1,2,3), keepdim=True).clamp_min(1e-3)
-        Lhigh = F.l1_loss(pred_high/scale, true_high/scale)
-
-        t   = min(1.0, float(epoch) / max(1, ramp_T))
-        lam = min(0.5, 0.5 * t)
-        w_low_sched  = 1.0
-        w_high_sched = 1.0 - 0.9 * t
-        
-        loss_hf = w_low_sched * Llow + w_high_sched * Lhigh
-        
-        u_pred, v_pred = y_pred[:,0:1], y_pred[:,1:2]
-        u_true, v_true = y_true[:,0:1], y_true[:,1:2]
-
-        div_pred = self.divergence(u_pred, v_pred)
-        div_true = self.divergence(u_true, v_true)
-        vor_pred = self.vorticity(u_pred, v_pred)
-        vor_true = self.vorticity(u_true, v_true)
-
-        mask = self.terrain_mask_inverse(gh) 
-        Ldiv = ((div_pred - div_true).abs() * mask).mean()
-        Lvor = ((vor_pred - vor_true).abs() * mask).mean()
-        Phys = Ldiv + Lvor
-
-        if epoch < phys_start:
-            w_phys = 0.0
-        elif epoch < phys_start + phys_ramp:
-            w_phys = w_phys_max * (epoch - phys_start) / phys_ramp
-        else:
-            w_phys = w_phys_max
-
-        loss = lam * L1_full + (1 - lam) * (loss_hf + w_phys * Phys)
-
-        info = {
-            "L1": float(L1_full.detach().cpu()),
-            "Llow": w_low_sched * Llow, "Lhigh": w_high_sched * Lhigh,
-            "lam": lam, "w_low": w_low_sched * Llow, "w_high": w_high_sched * Lhigh,
-            "Phys": float(Phys.detach().cpu()),
-            "w_phys": w_phys
-        }
-        return loss, info
+        stats = np.load(stats_file, allow_pickle=True)
+        if isinstance(stats, np.ndarray) and stats.shape == ():
+            stats = stats.item()
     
-
-    @staticmethod
-    def test_loss(y_pred, y_true):
-        return F.l1_loss(y_pred, y_true)
+        self.stats = stats
+        print(f"Loaded stats from: {stats_file}")
+        print(f"Stats keys: {list(stats.keys())}")
+        return self.stats
 
 
     def train_once(self, lr, hr, gl, gh, epoch):
@@ -172,8 +97,9 @@ class Trainer:
 
         pred = self.network(lr, gl, gh)
 
-        loss, info = self.combine_loss(pred, hr, gh, epoch=epoch, ramp_T=10)
+        loss, info = self.loss_fn(pred, hr, gh, epoch=epoch, ramp_T=10)
         return loss, info
+
 
     def test(self, dataset_eval, dataloader_eval):
         self.network.eval()
@@ -186,10 +112,86 @@ class Trainer:
                 gh = gh.float().to(self.device)
 
                 pred = self.network(lr, gl, gh)
-                loss = self.test_loss(pred, hr)
+                loss = self.loss_fn.val_loss(pred, hr)
                 total_loss += float(loss.detach().cpu())
                 n += 1
         return total_loss / max(1, n)
+
+    def load_model(self, path):
+        ckpt = torch.load(path, map_location=self.device)
+        self.network.load_state_dict(ckpt['net'])
+        print(f'Loaded model from: {path}')
+
+
+    def test_and_save(self, dataset_test, dataloader_test, save_dir):
+        """
+        在测试集上推理，使用 stats 文件进行反归一化，
+        保存 y_pred.npy / y_true.npy，并返回反归一化后的平均 MAE
+        """
+        self.network.eval()
+        stats = self._load_stats()
+    
+        wind_mean = stats["wind_mean"]
+        wind_std = stats["wind_std"]
+    
+        preds = []
+        gts = []
+    
+        abs_err_sum = 0.0
+        numel_sum = 0
+    
+        total_time = 0.0
+        count_time = 0
+    
+        with torch.no_grad():
+            for lr, hr, gl, gh in dataloader_test:
+                lr = lr.float().to(self.device)
+                hr = hr.float().to(self.device)
+                gl = gl.float().to(self.device)
+                gh = gh.float().to(self.device)
+    
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                start = time.time()
+    
+                pred = self.network(lr, gl, gh)
+    
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                end = time.time()
+    
+                total_time += (end - start)
+                count_time += 1
+    
+                pred_np = pred.detach().cpu().numpy()
+                hr_np = hr.detach().cpu().numpy()
+    
+                pred_denorm = pred_np * wind_std[None, :, None, None] + wind_mean[None, :, None, None]
+                true_denorm = hr_np * wind_std[None, :, None, None] + wind_mean[None, :, None, None]
+    
+                abs_err = np.abs(pred_denorm - true_denorm)
+                abs_err_sum += abs_err.sum()
+                numel_sum += abs_err.size
+    
+                preds.append(pred_denorm)
+                gts.append(true_denorm)
+    
+        avg_mae = abs_err_sum / max(1, numel_sum)
+    
+        if count_time > 0:
+            print("Average inference time: {:.4f} s (≈ {:.2f} ms)".format(
+                total_time / count_time, (total_time / count_time) * 1000
+            ))
+    
+        y_pred = np.concatenate(preds, axis=0)
+        y_true = np.concatenate(gts, axis=0)
+    
+        os.makedirs(save_dir, exist_ok=True)
+        np.save(os.path.join(save_dir, "y_pred.npy"), y_pred)
+        np.save(os.path.join(save_dir, "y_true.npy"), y_true)
+    
+        return avg_mae
+
 
     def train(self, dataset_train, dataset_eval, chk_dir):
 
@@ -200,7 +202,7 @@ class Trainer:
         printwrite(log_file, 'loading train dataloader')
         dl_train = DataLoader(dataset_train, batch_size=self.cfg.batch_size, shuffle=True, drop_last=False)
         printwrite(log_file, 'loading eval dataloader')
-        dl_eval = DataLoader(dataset_eval, batch_size=self.cfg.batch_size_test, shuffle=False, drop_last=False)
+        dl_eval = DataLoader(dataset_eval, batch_size=self.cfg.batch_size_val, shuffle=False, drop_last=False)
 
         self.network.train()
         step_global = 0
@@ -220,31 +222,38 @@ class Trainer:
 
                 step_global += 1
                 if (it % self.cfg.display_interval) == 0:
-                    printwrite(log_file,
-                               'batch training loss: {:.4f}, Llow={:.4f}, Lhigh={:.4f}, '
-                               'lam={:.2f}, w_low={:.2f}, w_high={:.2f}, Phys={:.3f}, w_phys={:.3f}, lr={:.6f}'.format(
-                                   float(loss.detach().cpu()), info["Llow"], info["Lhigh"],
-                                   info["lam"], info["w_low"], info["w_high"], info["Phys"], info["w_phys"], lr_now
-                               ))
+                    printwrite(log_file, 'batch training loss: {:.4f}, MAE={:.4f}, Lhigh={:.4f}, w_high={:.2f}, Phys={:.3f}, w_phys={:.3f}, lr={:.6f}'.format(float(loss.detach().cpu()), info["L1"], info["Lhigh"], info["w_high"], info["Phys"], info["w_phys"], lr_now))
+
+                if (epoch >= 5) and (it % (self.cfg.display_interval * self.cfg.eval_interval) == 0):
+                    val = self.test(dataset_eval, dl_eval)
+                    printwrite(log_file, f'batch eval loss: {val:.4f}')
+                    if val < best:
+                        count = 0
+                        printwrite(log_file, f'eval loss is reduced from {best:.5f} to {val:.5f}, saving model')
+                        self.save_model(os.path.join(chk_dir, f'{self.cfg.name}_best.chk'))
+                        best = val
+
 
             val = self.test(dataset_eval, dl_eval)
             printwrite(log_file, f'epoch eval loss: {val:.4f}')
             if val < best:
                 count = 0
                 printwrite(log_file, f'eval loss is reduced from {best:.5f} to {val:.5f}, saving model')
-                self.save_model(os.path.join(chk_dir, f'{name}_best.chk'))
+                self.save_model(os.path.join(chk_dir, f'{self.cfg.name}_best.chk'))
                 best = val
             else:
                 count += 1
                 printwrite(log_file, f'eval loss is not reduced for {count} epoch')
                 printwrite(log_file, f'best is {best} until now')
 
-            self.save_model(os.path.join(chk_dir, f'{name}_last.chk'))
+
+            self.save_model(os.path.join(chk_dir, f'{self.cfg.name}_last.chk'))
             
+
             if count >= self.early_stop:
                 printwrite(log_file, f'\nEarly stopping triggered after {count} epochs without improvement.')
                 printwrite(log_file, f'Best validation loss: {best:.5f}')
-                break
+                break 
                 
 
     def save_configs(self, path):
@@ -254,6 +263,8 @@ class Trainer:
     def save_model(self, path):
         torch.save({'net': self.network.state_dict()}, path)
 
+
+# ============================= main =============================
 if __name__ == '__main__':
     name = getattr(configs, "name", "WSR")
     
