@@ -18,9 +18,7 @@ import time
 from models.model_wo_Dem import WindSR_Terrain
 
 
-# ----------------------------- 简单 Warmup+Cosine -----------------------------
 class WarmupCosine:
-    """按 step 更新的 warmup+cosine 调度器（batch 级）"""
     def __init__(self, optimizer, warmup_steps, total_steps, base_lr, min_lr=1e-6):
         self.opt = optimizer
         self.warmup = max(1, warmup_steps)
@@ -124,10 +122,6 @@ class Trainer:
 
 
     def test_and_save(self, dataset_test, dataloader_test, save_dir):
-        """
-        在测试集上推理，使用 stats 文件进行反归一化，
-        保存 y_pred.npy / y_true.npy，并返回反归一化后的平均 MAE
-        """
         self.network.eval()
         stats = self._load_stats()
     
@@ -338,7 +332,6 @@ if __name__ == '__main__':
     trainer.save_configs(os.path.join(exp_dir, "configs.pkl"))
     trainer.train(dataset_train, dataset_eval, chk_dir=exp_dir)
 
-    # ==================== 训练结束后自动测试 ====================
     best_ckpt = os.path.join(exp_dir, f"{configs.name}_best.chk")
     results_dir = os.path.join(exp_dir, "results")
 
