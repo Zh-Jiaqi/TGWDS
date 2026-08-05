@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "A Terrain-Guided deep neural network for hub-height Wind field DownScaling"
+type: software
+authors:
+  - family-names: "Zhang"
+    given-names: "Jiaqi"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+
+version: "1.0.0"
+date-released: "2026-08-05"
+url: "https://github.com/Zh-Jiaqi/TGWDS.git"
+repository-code: "https://github.com/Zh-Jiaqi/TGWDS.git"
+license: "MIT"
